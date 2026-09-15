@@ -1,0 +1,10 @@
+# Folders
+.venv/
+.claude/
+fine_tuning_experiments/
+lme_v2_work/
+models/
+smoke_test/
+
+# Files
+.env
