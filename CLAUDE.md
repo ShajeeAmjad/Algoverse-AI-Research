@@ -246,6 +246,62 @@ authors' exact methodology (fp8 KV cache for two of the three readers, abbreviat
 in the key-expansion regeneration fallback, undocumented internal key format in the authors'
 released expansion-cache archives).
 
+### `longmemeval_stream_state.ipynb` — incremental vs. re-ingested secondary-model memory
+
+Extends the RWKV-first, Llama-second pairing built in `longmemeval_memorag_ext_new.ipynb` (RWKV-7
+G1 sees the query first and hands back clues/a draft answer; a Llama model reads them — either
+directly, `memonly`, or as retrieval queries over the session corpus, `memorag_top{5,10}` — and
+writes the final answer). That notebook rebuilds RWKV's state from the **entire** history for
+every query; this one asks whether the state instead has to be maintained **incrementally** —
+folded forward one session at a time and persisted between queries, the way a deployed assistant
+actually receives conversation — and whether that changes the clues handed back, and therefore
+what the primary model answers. The pairing itself never changes: every arm is RWKV-first,
+Llama-second, and there is no RWKV-alone arm. What varies is the **policy** used to build the
+secondary model's state (`stream` — one persisted state, probed from a clone; `bank` — several
+snapshots retained from that one pass, clues unioned; `segment` — state reset periodically to stay
+inside RWKV's trained context; `reingest` — ext_new's own from-scratch rebuild, kept only as a
+correctness **gate**, never run as a full accuracy arm) crossed with the **route** the clues take
+to the generator (`memonly` vs. `memorag_top5`, primary — ext_new measured top5 beating top10 at
+every RWKV size for both readers).
+
+`stream ≡ reingest` is a theorem in exact arithmetic (RWKV-7's update is a deterministic fold), so
+it is treated as a gate, not a finding — a tight match with small McNemar b/c counts is this
+notebook's *success* condition. What is not a theorem — fp16 drift over ~50 session boundaries,
+greedy-decode divergence from one flipped logit, a live state-aliasing bug class (`model.forward`
+mutates the state list you pass it, so a retained snapshot that skips `[t.clone() for t in state]`
+silently degenerates `bank` into `stream` without erroring), and disk round-trip fidelity — is
+measured by Gates G6–G10, whose headline output, `NOTE_DIVERGENCE_RATE`, is cited as the noise
+floor in every later figure caption. `memonly` has almost no headroom on its own (ext_new measured
+it at 0.14–0.15 against a 0.08 closedbook floor), so the decay analysis leads with a judge-free
+evidence-retrieval-recall metric rather than end-to-end accuracy, and its headline statistic is a
+within-question paired drop (each question's own Δ=0 vs. its own largest reachable Δ), not the
+pooled decay curve — the naively pooled curve is measurably biased toward the easy single-session
+questions that survive to large Δ (measured: 51% of `single-session-user` questions reach Δ=20
+sessions past their evidence, vs. 18–20% of `multi-session`/`temporal-reasoning`/
+`knowledge-update`).
+
+Two tiers: **Stage 1** reuses ext_new's own 100-question subset (Gate 4 asserts byte-identity with
+its cached `question_subset_100.json`, which is what licenses every McNemar comparison against its
+published numbers) as 100 independent native streams. **Stage 2** merges groups of 8 of those
+questions (pairwise-disjoint evidence, no shared `answer_session_id`, `_abs` questions excluded)
+into much longer chronological mega-streams (~380 sessions, ~900k tokens — 45–60× RWKV's trained
+context) so that large-Δ decay and question-level amortization become measurable at all; merging
+is a strictly harder retrieval problem for reasons unrelated to state persistence (measured: ~70%
+of merged questions acquire a co-merged session containing their own gold answer's key terms), so
+**Stage-2 accuracy is never compared to Stage-1, to ext_new, or to any published LongMemEval
+number** — only within Stage 2, and the per-question distractor density is logged as a covariate
+rather than hidden. Baselines (`closedbook`/`oracle_con`/`s_con`/`rag_q_top5`) are **imported**
+from ext_new's own `judged.jsonl`, never re-run, since Gate 4's subset guarantee makes that valid
+and it costs zero extra API spend.
+
+`longmemeval_memorag_ext_new.ipynb` is read-only from here (its `ext/` results, its shared
+`store/` — dataset, tokenizers, question subset, sha1-keyed Stella embedding cache); this
+notebook's own outputs live under a parallel `stream/` tree so the two can never collide. Every
+transcribed primitive (env/deps/dataset/prompt-fidelity gates, `feed`/`probe_memory`, the
+retrieval stack, generation backends, judging, Wilson/McNemar) is copied in verbatim rather than
+imported, per this repo's standalone-notebook convention — a name-resolution sweep and a
+cell-by-cell diff against ext_new are how that transcription is checked before trusting a run.
+
 ## Working with the data files
 
 When adding a new subject for the fact-learning experiment, follow the existing pair pattern in
